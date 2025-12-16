@@ -3,7 +3,15 @@
 use crate::config::Config;
 use crate::player::{Player, PlayerError};
 use crate::playlist::Playlist;
-use std::io::{self, Write};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Alignment, Constraint, Direction, Layout},
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph},
+    Terminal,
+};
+use std::io;
 use std::time::Duration;
 
 /// Main application state.
@@ -13,6 +21,7 @@ pub struct App {
     config: Config,
     running: bool,
     last_display_update: std::time::Instant,
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
 }
 
 impl App {
@@ -20,12 +29,17 @@ impl App {
     pub fn new(playlist: Playlist, config: Config) -> Result<Self, PlayerError> {
         let player = Player::new()?;
 
+        let backend = CrosstermBackend::new(io::stdout());
+        let terminal = Terminal::new(backend)
+            .map_err(|e| PlayerError::InitializationError(e.to_string()))?;
+
         Ok(Self {
             player,
             playlist,
             config,
             running: true,
             last_display_update: std::time::Instant::now(),
+            terminal,
         })
     }
 
@@ -130,66 +144,100 @@ impl App {
         Ok(())
     }
 
-    /// Displays the current status (simple text output).
-    fn display_status(&self) {
-        // Clear screen (simple approach)
-        print!("\x1B[2J\x1B[1;1H");
-        io::stdout().flush().unwrap();
+    /// Displays the current status using ratatui.
+    fn display_status(&mut self) {
+        self.terminal.draw(|f| {
+            let size = f.area();
 
-        println!("╔════════════════════════════════════════════════════════════╗");
-        println!("║  juke - minimalist music player                           ║");
-        println!("╚════════════════════════════════════════════════════════════╝");
-        println!();
+            // Create main layout
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),  // Header
+                    Constraint::Min(0),     // Content
+                    Constraint::Length(3),  // Footer
+                ])
+                .split(size);
 
-        if let Some(track) = self.playlist.current_track() {
-            println!("  ♪  {}", track.display_name());
+            // Header
+            let header = Paragraph::new("juke - minimalist music player")
+                .style(Style::default().fg(Color::Cyan))
+                .block(Block::default().borders(Borders::ALL))
+                .alignment(Alignment::Center);
+            f.render_widget(header, chunks[0]);
 
-            // Display artist and album if available
-            if let Some(artist) = &track.artist {
-                print!("     Artist: {}", artist);
-                if let Some(album) = &track.album {
-                    println!("  •  Album: {}", album);
-                } else {
-                    println!();
+            // Content
+            let mut content_lines = vec![];
+
+            if let Some(track) = self.playlist.current_track() {
+                content_lines.push(Line::from(vec![
+                    Span::raw("  ♪  "),
+                    Span::styled(track.display_name(), Style::default().fg(Color::Yellow)),
+                ]));
+
+                // Artist and album
+                if let Some(artist) = &track.artist {
+                    if let Some(album) = &track.album {
+                        content_lines.push(Line::from(format!("     Artist: {}  •  Album: {}", artist, album)));
+                    } else {
+                        content_lines.push(Line::from(format!("     Artist: {}", artist)));
+                    }
+                } else if let Some(album) = &track.album {
+                    content_lines.push(Line::from(format!("     Album: {}", album)));
                 }
-            } else if let Some(album) = &track.album {
-                println!("     Album: {}", album);
+
+                content_lines.push(Line::from(""));
+
+                // Time
+                let pos = self.player.current_position();
+                let dur = self.player.duration();
+                content_lines.push(Line::from(format!(
+                    "  ⏱  {:02}:{:02} / {:02}:{:02}",
+                    pos.as_secs() / 60, pos.as_secs() % 60,
+                    dur.as_secs() / 60, dur.as_secs() % 60
+                )));
+
+                content_lines.push(Line::from(""));
+
+                // State
+                let state_icon = match self.player.state() {
+                    crate::player::PlaybackState::Playing => "▶ Playing",
+                    crate::player::PlaybackState::Paused => "⏸ Paused",
+                    crate::player::PlaybackState::Stopped => "⏹ Stopped",
+                };
+                content_lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(state_icon, Style::default().fg(Color::Green)),
+                ]));
+
+                content_lines.push(Line::from(""));
+
+                // Track info
+                content_lines.push(Line::from(format!(
+                    "  Track {}/{}  |  Shuffle: {:?}  |  Repeat: {:?}",
+                    self.playlist.current_index() + 1,
+                    self.playlist.len(),
+                    self.playlist.shuffle_state(),
+                    self.playlist.repeat_mode()
+                )));
+            } else {
+                content_lines.push(Line::from("  No track loaded"));
             }
 
-            println!();
+            let content = Paragraph::new(content_lines)
+                .block(Block::default().borders(Borders::NONE));
+            f.render_widget(content, chunks[1]);
 
-            let pos = self.player.current_position();
-            let dur = self.player.duration();
-            println!("  ⏱  {:02}:{:02} / {:02}:{:02}",
-                pos.as_secs() / 60, pos.as_secs() % 60,
-                dur.as_secs() / 60, dur.as_secs() % 60);
-
-            println!();
-            let state_icon = match self.player.state() {
-                crate::player::PlaybackState::Playing => "▶ Playing",
-                crate::player::PlaybackState::Paused => "⏸ Paused",
-                crate::player::PlaybackState::Stopped => "⏹ Stopped",
-            };
-            println!("  {}  ", state_icon);
-
-            println!();
-            println!("  Track {}/{}  |  Shuffle: {:?}  |  Repeat: {:?}",
-                self.playlist.current_index() + 1,
-                self.playlist.len(),
-                self.playlist.shuffle_state(),
-                self.playlist.repeat_mode());
-        } else {
-            println!("  No track loaded");
-        }
-
-        println!();
-        println!("────────────────────────────────────────────────────────────");
-        println!("  Space: Play/Pause  |  n: Next  |  p: Previous  |  q: Quit");
-        println!("  →: Seek +{}s  |  ←: Seek -{}s  |  s: Shuffle  |  r: Repeat",
-            self.config.playback.seek_step,
-            self.config.playback.seek_step);
-        println!("────────────────────────────────────────────────────────────");
-
-        io::stdout().flush().unwrap();
+            // Footer
+            let footer_text = format!(
+                "Space: Play/Pause | n: Next | p: Previous | q: Quit | →/←: Seek ±{}s | s: Shuffle | r: Repeat",
+                self.config.playback.seek_step
+            );
+            let footer = Paragraph::new(footer_text)
+                .style(Style::default().fg(Color::DarkGray))
+                .block(Block::default().borders(Borders::ALL))
+                .alignment(Alignment::Center);
+            f.render_widget(footer, chunks[2]);
+        }).unwrap();
     }
 }

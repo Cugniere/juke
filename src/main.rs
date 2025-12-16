@@ -5,8 +5,12 @@ mod player;
 mod playlist;
 mod ui;
 
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
 use std::env;
+use std::io;
 use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,21 +34,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(1);
     }
 
+    // Setup terminal
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+
     // Create and start the app
     let mut app = app::App::new(playlist, config)?;
     app.start()?;
 
-    // Enable raw mode for keyboard input
-    enable_raw_mode()?;
-
     // Main loop
     let result = run_main_loop(&mut app);
 
-    // Cleanup
+    // Cleanup - restore terminal state
     disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen)?;
 
-    // Clear screen one last time
-    print!("\x1B[2J\x1B[1;1H");
     println!("Thanks for using juke!");
 
     result
