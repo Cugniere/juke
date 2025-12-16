@@ -50,6 +50,9 @@ fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<(), Box<dyn std::e
 fn handle_track_list_mode(app: &mut App, key: KeyEvent) -> Result<(), Box<dyn std::error::Error>> {
     match key.code {
         KeyCode::Esc => app.set_ui_mode(UIMode::Normal),
+        KeyCode::Up => app.track_list_up(),
+        KeyCode::Down => app.track_list_down(),
+        KeyCode::Enter => app.track_list_play_selected()?,
         KeyCode::Backspace => app.search_backspace(),
         KeyCode::Char(c) => app.search_input(c),
         _ => {}

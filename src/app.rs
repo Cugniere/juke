@@ -33,6 +33,7 @@ pub struct App {
     ui_mode: UIMode,
     search_query: String,
     waveform_history: Vec<f32>, // Rolling buffer of amplitude values for visualization
+    track_list_selected: usize, // Selected track index in track list view
 }
 
 impl App {
@@ -54,6 +55,7 @@ impl App {
             ui_mode: UIMode::Normal,
             search_query: String::new(),
             waveform_history: vec![0.0; 12], // 12 fixed bars for visualization
+            track_list_selected: 0,
         })
     }
 
@@ -203,7 +205,10 @@ impl App {
     /// Sets the UI mode.
     pub fn set_ui_mode(&mut self, mode: UIMode) {
         self.ui_mode = mode;
-        if mode != UIMode::TrackList {
+        if mode == UIMode::TrackList {
+            // Initialize selection to current track
+            self.track_list_selected = self.playlist.current_index();
+        } else {
             self.search_query.clear();
         }
         self.display_status();
@@ -229,6 +234,36 @@ impl App {
     pub fn clear_search(&mut self) {
         self.search_query.clear();
         self.display_status();
+    }
+
+    /// Moves selection up in track list.
+    pub fn track_list_up(&mut self) {
+        if self.ui_mode == UIMode::TrackList && self.track_list_selected > 0 {
+            self.track_list_selected -= 1;
+            self.display_status();
+        }
+    }
+
+    /// Moves selection down in track list.
+    pub fn track_list_down(&mut self) {
+        if self.ui_mode == UIMode::TrackList {
+            let max_index = self.playlist.len().saturating_sub(1);
+            if self.track_list_selected < max_index {
+                self.track_list_selected += 1;
+                self.display_status();
+            }
+        }
+    }
+
+    /// Plays the selected track from track list.
+    pub fn track_list_play_selected(&mut self) -> Result<(), PlayerError> {
+        if self.ui_mode == UIMode::TrackList {
+            if self.playlist.goto(self.track_list_selected) {
+                self.load_current_track()?;
+                self.set_ui_mode(UIMode::Normal);
+            }
+        }
+        Ok(())
     }
 
     /// Loads the current track from the playlist.
@@ -270,6 +305,7 @@ impl App {
         let shuffle_state = self.playlist.shuffle_state();
         let repeat_mode = self.playlist.repeat_mode();
         let seek_step = self.config.playback.seek_step;
+        let track_list_selected = self.track_list_selected;
 
         let current_track = self.playlist.current_track().cloned();
         let pos = self.player.current_position();
@@ -298,7 +334,7 @@ impl App {
                     &waveform_data
                 ),
                 UIMode::TrackList => render_track_list_view(
-                    f, size, &tracks, current_index, &search_query
+                    f, size, &tracks, current_index, track_list_selected, &search_query
                 ),
                 UIMode::Help => render_help_view(f, size, seek_step),
             }
@@ -433,6 +469,7 @@ fn render_track_list_view(
     size: ratatui::layout::Rect,
     tracks: &[crate::playlist::Track],
     current_index: usize,
+    selected_index: usize,
     search_query: &str,
 ) {
         // Create layout for track list
@@ -483,14 +520,19 @@ fn render_track_list_view(
             // Truncate track name based on available width (reserve 25 chars for prefix, number, duration)
             let display_name = truncate_for_display(&track.display_name(), size.width, 25);
 
-            if idx == current_index {
-                line_spans.push(Span::styled(
-                    display_name,
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-                ));
+            // Determine styling based on whether this is the selected or currently playing track
+            let style = if idx == selected_index {
+                // Selected track - highlighted with reverse colors
+                Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
+            } else if idx == current_index {
+                // Currently playing track - yellow and bold
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
-                line_spans.push(Span::raw(display_name));
-            }
+                // Regular track
+                Style::default()
+            };
+
+            line_spans.push(Span::styled(display_name, style));
 
             if let Some(duration) = &track.duration {
                 let duration_str = format!(
