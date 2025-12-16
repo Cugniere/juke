@@ -34,6 +34,7 @@ pub struct App {
     search_query: String,
     waveform_history: Vec<f32>, // Rolling buffer of amplitude values for visualization
     track_list_selected: usize, // Selected index in filtered track list view
+    track_list_scroll: usize,   // Scroll offset for track list view
     filtered_indices: Vec<usize>, // Indices of tracks matching search filter
 }
 
@@ -57,6 +58,7 @@ impl App {
             search_query: String::new(),
             waveform_history: vec![0.0; 12], // 12 fixed bars for visualization
             track_list_selected: 0,
+            track_list_scroll: 0,
             filtered_indices: Vec::new(),
         })
     }
@@ -216,6 +218,17 @@ impl App {
                 .iter()
                 .position(|&idx| idx == current_idx)
                 .unwrap_or(0);
+
+            // Reset scroll to show selected track
+            self.track_list_scroll = 0;
+
+            // Center the selected track if possible
+            if let Ok(size) = self.terminal.size() {
+                let visible_height = size.height.saturating_sub(5) as usize;
+                if self.track_list_selected > visible_height / 2 {
+                    self.track_list_scroll = self.track_list_selected.saturating_sub(visible_height / 2);
+                }
+            }
         } else {
             self.search_query.clear();
         }
@@ -249,6 +262,7 @@ impl App {
         // Reset selection to first filtered track if current selection is out of bounds
         if self.track_list_selected >= self.filtered_indices.len() {
             self.track_list_selected = 0;
+            self.track_list_scroll = 0;
         }
     }
 
@@ -280,6 +294,12 @@ impl App {
     pub fn track_list_up(&mut self) {
         if self.ui_mode == UIMode::TrackList && self.track_list_selected > 0 {
             self.track_list_selected -= 1;
+
+            // Adjust scroll if selection moved above visible area
+            if self.track_list_selected < self.track_list_scroll {
+                self.track_list_scroll = self.track_list_selected;
+            }
+
             self.display_status();
         }
     }
@@ -290,6 +310,18 @@ impl App {
             let max_index = self.filtered_indices.len().saturating_sub(1);
             if self.track_list_selected < max_index {
                 self.track_list_selected += 1;
+
+                // Get terminal size to calculate visible area
+                if let Ok(size) = self.terminal.size() {
+                    // Track list layout: 3 lines header + content + 2 lines footer
+                    let visible_height = size.height.saturating_sub(5) as usize;
+
+                    // Adjust scroll if selection moved below visible area
+                    if self.track_list_selected >= self.track_list_scroll + visible_height {
+                        self.track_list_scroll = self.track_list_selected.saturating_sub(visible_height - 1);
+                    }
+                }
+
                 self.display_status();
             }
         }
@@ -348,6 +380,7 @@ impl App {
         let repeat_mode = self.playlist.repeat_mode();
         let seek_step = self.config.playback.seek_step;
         let track_list_selected = self.track_list_selected;
+        let track_list_scroll = self.track_list_scroll;
 
         let current_track = self.playlist.current_track().cloned();
         let pos = self.player.current_position();
@@ -377,7 +410,7 @@ impl App {
                     &waveform_data
                 ),
                 UIMode::TrackList => render_track_list_view(
-                    f, size, &tracks, current_index, track_list_selected, &search_query, &filtered_indices
+                    f, size, &tracks, current_index, track_list_selected, &search_query, &filtered_indices, track_list_scroll
                 ),
                 UIMode::Help => render_help_view(f, size, seek_step),
             }
@@ -515,6 +548,7 @@ fn render_track_list_view(
     selected_index: usize,
     search_query: &str,
     filtered_indices: &[usize],
+    scroll_offset: usize,
 ) {
         // Create layout for track list
         let chunks = Layout::default()
@@ -541,7 +575,15 @@ fn render_track_list_view(
         // Track list
         let mut track_lines = vec![];
 
-        for (filtered_idx, &actual_idx) in filtered_indices.iter().enumerate() {
+        // Calculate visible range based on scroll offset and content area height
+        let visible_height = chunks[1].height as usize;
+        let visible_start = scroll_offset;
+        let visible_end = (scroll_offset + visible_height).min(filtered_indices.len());
+
+        // Only render tracks in the visible range
+        for filtered_idx in visible_start..visible_end {
+            let actual_idx = filtered_indices[filtered_idx];
+
             if actual_idx >= tracks.len() {
                 continue;
             }
