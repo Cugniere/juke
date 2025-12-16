@@ -1,6 +1,6 @@
 //! Keyboard input handling and event processing.
 
-use crate::app::App;
+use crate::app::{App, UIMode};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
@@ -17,6 +17,16 @@ pub fn handle_input(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Handles a keyboard event.
 fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<(), Box<dyn std::error::Error>> {
+    match app.ui_mode() {
+        UIMode::Normal => handle_normal_mode(app, key)?,
+        UIMode::TrackList => handle_track_list_mode(app, key)?,
+        UIMode::Help => handle_help_mode(app, key)?,
+    }
+    Ok(())
+}
+
+/// Handles keyboard events in normal mode.
+fn handle_normal_mode(app: &mut App, key: KeyEvent) -> Result<(), Box<dyn std::error::Error>> {
     match key.code {
         KeyCode::Char('q') => app.quit(),
         KeyCode::Char(' ') => app.toggle_play_pause(),
@@ -24,6 +34,8 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<(), Box<dyn std::err
         KeyCode::Char('p') => app.previous_track()?,
         KeyCode::Char('s') => app.toggle_shuffle(),
         KeyCode::Char('r') => app.cycle_repeat(),
+        KeyCode::Char('t') => app.set_ui_mode(UIMode::TrackList),
+        KeyCode::Char('?') => app.set_ui_mode(UIMode::Help),
         KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => app.seek_forward()?,
         KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => app.seek_backward()?,
         KeyCode::Right => app.next_track()?,
@@ -31,5 +43,23 @@ fn handle_key_event(app: &mut App, key: KeyEvent) -> Result<(), Box<dyn std::err
         KeyCode::Esc => app.quit(),
         _ => {}
     }
+    Ok(())
+}
+
+/// Handles keyboard events in track list mode.
+fn handle_track_list_mode(app: &mut App, key: KeyEvent) -> Result<(), Box<dyn std::error::Error>> {
+    match key.code {
+        KeyCode::Esc => app.set_ui_mode(UIMode::Normal),
+        KeyCode::Backspace => app.search_backspace(),
+        KeyCode::Char(c) => app.search_input(c),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Handles keyboard events in help mode.
+fn handle_help_mode(app: &mut App, _key: KeyEvent) -> Result<(), Box<dyn std::error::Error>> {
+    // Any key closes help
+    app.set_ui_mode(UIMode::Normal);
     Ok(())
 }

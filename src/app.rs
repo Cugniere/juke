@@ -6,13 +6,21 @@ use crate::playlist::Playlist;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph},
     Terminal,
 };
 use std::io;
 use std::time::Duration;
+
+/// UI display mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UIMode {
+    Normal,
+    TrackList,
+    Help,
+}
 
 /// Main application state.
 pub struct App {
@@ -22,6 +30,9 @@ pub struct App {
     running: bool,
     last_display_update: std::time::Instant,
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    ui_mode: UIMode,
+    search_query: String,
+    waveform_history: Vec<f32>, // Rolling buffer of amplitude values for visualization
 }
 
 impl App {
@@ -40,6 +51,9 @@ impl App {
             running: true,
             last_display_update: std::time::Instant::now(),
             terminal,
+            ui_mode: UIMode::Normal,
+            search_query: String::new(),
+            waveform_history: vec![0.0; 12], // 12 fixed bars for visualization
         })
     }
 
@@ -65,13 +79,54 @@ impl App {
             }
         }
 
-        // Update display periodically (every second)
-        if self.last_display_update.elapsed() >= Duration::from_secs(1) {
+        // Update waveform visualization
+        if self.player.has_track() {
+            self.update_waveform();
+        }
+
+        // Update display periodically for smooth waveform animation
+        // Update every 30ms when playing, every second when paused
+        let update_interval = if self.player.state() == crate::player::PlaybackState::Playing {
+            Duration::from_millis(30)
+        } else {
+            Duration::from_secs(1)
+        };
+
+        if self.last_display_update.elapsed() >= update_interval {
             self.display_status();
             self.last_display_update = std::time::Instant::now();
         }
 
         Ok(())
+    }
+
+    /// Updates the waveform visualization data.
+    fn update_waveform(&mut self) {
+        // Update all bars independently (simulated based on playback state)
+        if self.player.state() == crate::player::PlaybackState::Playing {
+            // Generate bar heights based on time
+            // In a real implementation, this would use FFT on actual audio data
+            // Use modulo to keep time in a reasonable range for sine calculations
+            let time = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() % 60000) as f32 / 1000.0; // 0-60 seconds range
+
+            // Update each bar with its own frequency to simulate different frequency bands
+            for (i, bar) in self.waveform_history.iter_mut().enumerate() {
+                // Each bar has a different base frequency (simulating bass to treble)
+                let freq = 1.0 + (i as f32 * 0.5); // Frequencies from 1 Hz to 6.5 Hz
+                let amplitude = (time * freq * std::f32::consts::PI).sin().abs();
+                // Add some variation to make it more interesting
+                let variation = (time * freq * 2.0).sin() * 0.3;
+                *bar = (amplitude * 0.7 + variation.abs() * 0.3).min(1.0);
+            }
+        } else {
+            // When paused, reset all bars to zero
+            for bar in self.waveform_history.iter_mut() {
+                *bar = 0.0;
+            }
+        }
     }
 
     /// Handles play/pause toggle.
@@ -134,6 +189,42 @@ impl App {
         self.running
     }
 
+    /// Returns the current UI mode.
+    pub fn ui_mode(&self) -> UIMode {
+        self.ui_mode
+    }
+
+    /// Sets the UI mode.
+    pub fn set_ui_mode(&mut self, mode: UIMode) {
+        self.ui_mode = mode;
+        if mode != UIMode::TrackList {
+            self.search_query.clear();
+        }
+        self.display_status();
+    }
+
+    /// Adds a character to the search query.
+    pub fn search_input(&mut self, c: char) {
+        if self.ui_mode == UIMode::TrackList {
+            self.search_query.push(c);
+            self.display_status();
+        }
+    }
+
+    /// Removes the last character from the search query.
+    pub fn search_backspace(&mut self) {
+        if self.ui_mode == UIMode::TrackList {
+            self.search_query.pop();
+            self.display_status();
+        }
+    }
+
+    /// Clears the search query.
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.display_status();
+    }
+
     /// Loads the current track from the playlist.
     fn load_current_track(&mut self) -> Result<(), PlayerError> {
         if let Some(track) = self.playlist.current_track() {
@@ -146,8 +237,55 @@ impl App {
 
     /// Displays the current status using ratatui.
     fn display_status(&mut self) {
-        self.terminal.draw(|f| {
+        let ui_mode = self.ui_mode;
+        let search_query = self.search_query.clone();
+        let current_index = self.playlist.current_index();
+        let playlist_len = self.playlist.len();
+        let shuffle_state = self.playlist.shuffle_state();
+        let repeat_mode = self.playlist.repeat_mode();
+        let seek_step = self.config.playback.seek_step;
+
+        let current_track = self.playlist.current_track().cloned();
+        let pos = self.player.current_position();
+        let dur = self.player.duration();
+        let state = self.player.state();
+
+        let tracks: Vec<_> = self.playlist.tracks().to_vec();
+        let waveform_data = self.waveform_history.clone();
+
+        self.terminal.draw(move |f| {
             let size = f.area();
+
+            match ui_mode {
+                UIMode::Normal => render_normal_view(
+                    f, size, current_track.as_ref(), pos, dur, state,
+                    current_index, playlist_len, shuffle_state, repeat_mode, seek_step,
+                    &waveform_data
+                ),
+                UIMode::TrackList => render_track_list_view(
+                    f, size, &tracks, current_index, &search_query
+                ),
+                UIMode::Help => render_help_view(f, size, seek_step),
+            }
+        }).unwrap();
+    }
+}
+
+/// Renders the normal playback view.
+fn render_normal_view(
+    f: &mut ratatui::Frame,
+    size: ratatui::layout::Rect,
+    current_track: Option<&crate::playlist::Track>,
+    pos: Duration,
+    dur: Duration,
+    state: crate::player::PlaybackState,
+    current_index: usize,
+    playlist_len: usize,
+    shuffle_state: crate::playlist::ShuffleState,
+    repeat_mode: crate::playlist::RepeatMode,
+    seek_step: u32,
+    waveform_data: &[f32],
+) {
 
             // Create main layout
             let chunks = Layout::default()
@@ -155,6 +293,7 @@ impl App {
                 .constraints([
                     Constraint::Length(3),  // Header
                     Constraint::Min(0),     // Content
+                    Constraint::Length(1),  // Progress bar
                     Constraint::Length(3),  // Footer
                 ])
                 .split(size);
@@ -169,7 +308,7 @@ impl App {
             // Content
             let mut content_lines = vec![];
 
-            if let Some(track) = self.playlist.current_track() {
+            if let Some(track) = current_track {
                 content_lines.push(Line::from(vec![
                     Span::raw("  ♪  "),
                     Span::styled(track.display_name(), Style::default().fg(Color::Yellow)),
@@ -188,19 +327,22 @@ impl App {
 
                 content_lines.push(Line::from(""));
 
-                // Time
-                let pos = self.player.current_position();
-                let dur = self.player.duration();
-                content_lines.push(Line::from(format!(
-                    "  ⏱  {:02}:{:02} / {:02}:{:02}",
+                // Waveform and Time
+                let waveform_str = render_waveform(waveform_data);
+                let time_str = format!(
+                    "{:02}:{:02} / {:02}:{:02}",
                     pos.as_secs() / 60, pos.as_secs() % 60,
                     dur.as_secs() / 60, dur.as_secs() % 60
-                )));
+                );
+                content_lines.push(Line::from(vec![
+                    Span::styled(format!("  {} ", waveform_str), Style::default().fg(Color::Cyan)),
+                    Span::raw(time_str),
+                ]));
 
                 content_lines.push(Line::from(""));
 
                 // State
-                let state_icon = match self.player.state() {
+                let state_icon = match state {
                     crate::player::PlaybackState::Playing => "▶ Playing",
                     crate::player::PlaybackState::Paused => "⏸ Paused",
                     crate::player::PlaybackState::Stopped => "⏹ Stopped",
@@ -215,10 +357,10 @@ impl App {
                 // Track info
                 content_lines.push(Line::from(format!(
                     "  Track {}/{}  |  Shuffle: {:?}  |  Repeat: {:?}",
-                    self.playlist.current_index() + 1,
-                    self.playlist.len(),
-                    self.playlist.shuffle_state(),
-                    self.playlist.repeat_mode()
+                    current_index + 1,
+                    playlist_len,
+                    shuffle_state,
+                    repeat_mode
                 )));
             } else {
                 content_lines.push(Line::from("  No track loaded"));
@@ -228,16 +370,224 @@ impl App {
                 .block(Block::default().borders(Borders::NONE));
             f.render_widget(content, chunks[1]);
 
+            // Progress bar
+            let progress = if dur.as_secs() > 0 {
+                (pos.as_secs_f64() / dur.as_secs_f64() * 100.0) as u16
+            } else {
+                0
+            };
+
+            let gauge = Gauge::default()
+                .block(Block::default())
+                .gauge_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .bg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                )
+                .percent(progress);
+            f.render_widget(gauge, chunks[2]);
+
             // Footer
             let footer_text = format!(
-                "Space: Play/Pause | n: Next | p: Previous | q: Quit | →/←: Seek ±{}s | s: Shuffle | r: Repeat",
-                self.config.playback.seek_step
+                "Space: Play/Pause | n: Next | p: Previous | q: Quit | →/←: Seek ±{}s | s: Shuffle | r: Repeat | t: Tracks | ?: Help",
+                seek_step
             );
             let footer = Paragraph::new(footer_text)
                 .style(Style::default().fg(Color::DarkGray))
                 .block(Block::default().borders(Borders::ALL))
                 .alignment(Alignment::Center);
-            f.render_widget(footer, chunks[2]);
-        }).unwrap();
-    }
+            f.render_widget(footer, chunks[3]);
+}
+
+/// Renders the track list overlay view.
+fn render_track_list_view(
+    f: &mut ratatui::Frame,
+    size: ratatui::layout::Rect,
+    tracks: &[crate::playlist::Track],
+    current_index: usize,
+    search_query: &str,
+) {
+        // Create layout for track list
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),  // Header with search
+                Constraint::Min(0),     // Track list
+                Constraint::Length(2),  // Footer
+            ])
+            .split(size);
+
+        // Header with search bar
+        let search_text = if search_query.is_empty() {
+            "Track List - Start typing to search...".to_string()
+        } else {
+            format!("Search: {}_", search_query)
+        };
+        let header = Paragraph::new(search_text)
+            .style(Style::default().fg(Color::Cyan))
+            .block(Block::default().borders(Borders::ALL))
+            .alignment(Alignment::Left);
+        f.render_widget(header, chunks[0]);
+
+        // Track list
+        let mut track_lines = vec![];
+
+        for (idx, track) in tracks.iter().enumerate() {
+            let display_name = track.display_name().to_lowercase();
+            let artist_name = track.artist.as_deref().unwrap_or("").to_lowercase();
+            let album_name = track.album.as_deref().unwrap_or("").to_lowercase();
+            let search_lower = search_query.to_lowercase();
+
+            // Filter based on search query
+            if !search_lower.is_empty()
+                && !display_name.contains(&search_lower)
+                && !artist_name.contains(&search_lower)
+                && !album_name.contains(&search_lower)
+            {
+                continue;
+            }
+
+            let prefix = if idx == current_index { "▶ " } else { "  " };
+            let track_num = format!("{:3}. ", idx + 1);
+
+            let mut line_spans = vec![Span::raw(prefix), Span::raw(track_num)];
+
+            if idx == current_index {
+                line_spans.push(Span::styled(
+                    track.display_name(),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                line_spans.push(Span::raw(track.display_name()));
+            }
+
+            if let Some(duration) = &track.duration {
+                let duration_str = format!(
+                    "  [{:02}:{:02}]",
+                    duration.as_secs() / 60,
+                    duration.as_secs() % 60
+                );
+                line_spans.push(Span::styled(
+                    duration_str,
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            track_lines.push(Line::from(line_spans));
+        }
+
+        if track_lines.is_empty() {
+            track_lines.push(Line::from("  No tracks match your search"));
+        }
+
+        let track_list = Paragraph::new(track_lines)
+            .block(Block::default().borders(Borders::ALL).title("Tracks"));
+        f.render_widget(track_list, chunks[1]);
+
+        // Footer
+        let footer = Paragraph::new("Esc: Back | Enter: Play selected | Type to search")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::NONE))
+            .alignment(Alignment::Center);
+        f.render_widget(footer, chunks[2]);
+}
+
+/// Renders the help overlay view.
+fn render_help_view(f: &mut ratatui::Frame, size: ratatui::layout::Rect, seek_step: u32) {
+        // Create centered help box
+        let help_area = {
+            let vertical = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(10),
+                    Constraint::Percentage(80),
+                    Constraint::Percentage(10),
+                ])
+                .split(size);
+
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(20),
+                    Constraint::Percentage(60),
+                    Constraint::Percentage(20),
+                ])
+                .split(vertical[1])[1]
+        };
+
+        let help_text = vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "juke - Keybindings",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  Space      ", Style::default().fg(Color::Yellow)),
+                Span::raw("Play / Pause"),
+            ]),
+            Line::from(vec![
+                Span::styled("  n / →      ", Style::default().fg(Color::Yellow)),
+                Span::raw("Next track"),
+            ]),
+            Line::from(vec![
+                Span::styled("  p / ←      ", Style::default().fg(Color::Yellow)),
+                Span::raw("Previous track"),
+            ]),
+            Line::from(vec![
+                Span::styled("  Shift+→    ", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("Seek forward {}s", seek_step)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Shift+←    ", Style::default().fg(Color::Yellow)),
+                Span::raw(format!("Seek backward {}s", seek_step)),
+            ]),
+            Line::from(vec![
+                Span::styled("  s          ", Style::default().fg(Color::Yellow)),
+                Span::raw("Toggle shuffle"),
+            ]),
+            Line::from(vec![
+                Span::styled("  r          ", Style::default().fg(Color::Yellow)),
+                Span::raw("Cycle repeat mode"),
+            ]),
+            Line::from(vec![
+                Span::styled("  t          ", Style::default().fg(Color::Yellow)),
+                Span::raw("Toggle track list"),
+            ]),
+            Line::from(vec![
+                Span::styled("  ?          ", Style::default().fg(Color::Yellow)),
+                Span::raw("Toggle help (this screen)"),
+            ]),
+            Line::from(vec![
+                Span::styled("  Esc / q    ", Style::default().fg(Color::Yellow)),
+                Span::raw("Quit"),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Press any key to close",
+                Style::default().fg(Color::DarkGray),
+            )),
+        ];
+
+        let help = Paragraph::new(help_text)
+            .block(Block::default().borders(Borders::ALL).title("Help"))
+            .alignment(Alignment::Left);
+        f.render_widget(help, help_area);
+}
+
+/// Renders bar visualizer data as a string of block characters.
+fn render_waveform(data: &[f32]) -> String {
+    // Use block characters to represent amplitude levels
+    // Characters from lowest to highest: ▁▂▃▄▅▆▇█
+    const LEVELS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+    // Each bar is rendered with a block character based on its amplitude
+    data.iter()
+        .map(|&amplitude| {
+            // Map amplitude (0.0-1.0) to character index (0-7)
+            let index = (amplitude * 7.0).round() as usize;
+            LEVELS[index.min(7)]
+        })
+        .collect()
 }
