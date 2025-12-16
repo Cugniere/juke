@@ -33,7 +33,8 @@ pub struct App {
     ui_mode: UIMode,
     search_query: String,
     waveform_history: Vec<f32>, // Rolling buffer of amplitude values for visualization
-    track_list_selected: usize, // Selected track index in track list view
+    track_list_selected: usize, // Selected index in filtered track list view
+    filtered_indices: Vec<usize>, // Indices of tracks matching search filter
 }
 
 impl App {
@@ -56,6 +57,7 @@ impl App {
             search_query: String::new(),
             waveform_history: vec![0.0; 12], // 12 fixed bars for visualization
             track_list_selected: 0,
+            filtered_indices: Vec::new(),
         })
     }
 
@@ -206,18 +208,55 @@ impl App {
     pub fn set_ui_mode(&mut self, mode: UIMode) {
         self.ui_mode = mode;
         if mode == UIMode::TrackList {
-            // Initialize selection to current track
-            self.track_list_selected = self.playlist.current_index();
+            // Initialize selection and update filtered indices
+            self.update_filtered_indices();
+            // Find the current track in filtered list
+            let current_idx = self.playlist.current_index();
+            self.track_list_selected = self.filtered_indices
+                .iter()
+                .position(|&idx| idx == current_idx)
+                .unwrap_or(0);
         } else {
             self.search_query.clear();
         }
         self.display_status();
     }
 
+    /// Updates the filtered track indices based on search query.
+    fn update_filtered_indices(&mut self) {
+        let search_lower = self.search_query.to_lowercase();
+        self.filtered_indices.clear();
+
+        for (idx, track) in self.playlist.tracks().iter().enumerate() {
+            if search_lower.is_empty() {
+                // No filter - include all tracks
+                self.filtered_indices.push(idx);
+            } else {
+                // Check if track matches search
+                let display_name = track.display_name().to_lowercase();
+                let artist_name = track.artist.as_deref().unwrap_or("").to_lowercase();
+                let album_name = track.album.as_deref().unwrap_or("").to_lowercase();
+
+                if display_name.contains(&search_lower)
+                    || artist_name.contains(&search_lower)
+                    || album_name.contains(&search_lower)
+                {
+                    self.filtered_indices.push(idx);
+                }
+            }
+        }
+
+        // Reset selection to first filtered track if current selection is out of bounds
+        if self.track_list_selected >= self.filtered_indices.len() {
+            self.track_list_selected = 0;
+        }
+    }
+
     /// Adds a character to the search query.
     pub fn search_input(&mut self, c: char) {
         if self.ui_mode == UIMode::TrackList {
             self.search_query.push(c);
+            self.update_filtered_indices();
             self.display_status();
         }
     }
@@ -226,6 +265,7 @@ impl App {
     pub fn search_backspace(&mut self) {
         if self.ui_mode == UIMode::TrackList {
             self.search_query.pop();
+            self.update_filtered_indices();
             self.display_status();
         }
     }
@@ -247,7 +287,7 @@ impl App {
     /// Moves selection down in track list.
     pub fn track_list_down(&mut self) {
         if self.ui_mode == UIMode::TrackList {
-            let max_index = self.playlist.len().saturating_sub(1);
+            let max_index = self.filtered_indices.len().saturating_sub(1);
             if self.track_list_selected < max_index {
                 self.track_list_selected += 1;
                 self.display_status();
@@ -257,8 +297,10 @@ impl App {
 
     /// Plays the selected track from track list.
     pub fn track_list_play_selected(&mut self) -> Result<(), PlayerError> {
-        if self.ui_mode == UIMode::TrackList {
-            if self.playlist.goto(self.track_list_selected) {
+        if self.ui_mode == UIMode::TrackList && self.track_list_selected < self.filtered_indices.len() {
+            // Map filtered index to actual playlist index
+            let actual_index = self.filtered_indices[self.track_list_selected];
+            if self.playlist.goto(actual_index) {
                 self.load_current_track()?;
                 self.set_ui_mode(UIMode::Normal);
             }
@@ -314,6 +356,7 @@ impl App {
 
         let tracks: Vec<_> = self.playlist.tracks().to_vec();
         let waveform_data = self.waveform_history.clone();
+        let filtered_indices = self.filtered_indices.clone();
 
         if let Err(e) = self.terminal.draw(move |f| {
             let size = f.area();
@@ -334,7 +377,7 @@ impl App {
                     &waveform_data
                 ),
                 UIMode::TrackList => render_track_list_view(
-                    f, size, &tracks, current_index, track_list_selected, &search_query
+                    f, size, &tracks, current_index, track_list_selected, &search_query, &filtered_indices
                 ),
                 UIMode::Help => render_help_view(f, size, seek_step),
             }
@@ -471,6 +514,7 @@ fn render_track_list_view(
     current_index: usize,
     selected_index: usize,
     search_query: &str,
+    filtered_indices: &[usize],
 ) {
         // Create layout for track list
         let chunks = Layout::default()
@@ -497,23 +541,14 @@ fn render_track_list_view(
         // Track list
         let mut track_lines = vec![];
 
-        for (idx, track) in tracks.iter().enumerate() {
-            let display_name = track.display_name().to_lowercase();
-            let artist_name = track.artist.as_deref().unwrap_or("").to_lowercase();
-            let album_name = track.album.as_deref().unwrap_or("").to_lowercase();
-            let search_lower = search_query.to_lowercase();
-
-            // Filter based on search query
-            if !search_lower.is_empty()
-                && !display_name.contains(&search_lower)
-                && !artist_name.contains(&search_lower)
-                && !album_name.contains(&search_lower)
-            {
+        for (filtered_idx, &actual_idx) in filtered_indices.iter().enumerate() {
+            if actual_idx >= tracks.len() {
                 continue;
             }
 
-            let prefix = if idx == current_index { "▶ " } else { "  " };
-            let track_num = format!("{:3}. ", idx + 1);
+            let track = &tracks[actual_idx];
+            let prefix = if actual_idx == current_index { "▶ " } else { "  " };
+            let track_num = format!("{:3}. ", actual_idx + 1);
 
             let mut line_spans = vec![Span::raw(prefix), Span::raw(track_num)];
 
@@ -521,10 +556,10 @@ fn render_track_list_view(
             let display_name = truncate_for_display(&track.display_name(), size.width, 25);
 
             // Determine styling based on whether this is the selected or currently playing track
-            let style = if idx == selected_index {
+            let style = if filtered_idx == selected_index {
                 // Selected track - highlighted with reverse colors
                 Style::default().bg(Color::Cyan).fg(Color::Black).add_modifier(Modifier::BOLD)
-            } else if idx == current_index {
+            } else if actual_idx == current_index {
                 // Currently playing track - yellow and bold
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else {
