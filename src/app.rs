@@ -332,132 +332,99 @@ fn render_normal_view(
     pos: Duration,
     dur: Duration,
     state: crate::player::PlaybackState,
-    current_index: usize,
-    playlist_len: usize,
+    _current_index: usize,
+    _playlist_len: usize,
     shuffle_state: crate::playlist::ShuffleState,
     repeat_mode: crate::playlist::RepeatMode,
-    seek_step: u32,
+    _seek_step: u32,
     waveform_data: &[f32],
 ) {
-
-            // Create main layout
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),  // Header
-                    Constraint::Min(0),     // Content
-                    Constraint::Length(1),  // Progress bar
-                    Constraint::Length(3),  // Footer
-                ])
-                .split(size);
-
-            // Header
-            let header = Paragraph::new("juke - minimalist music player")
-                .style(Style::default().fg(Color::Cyan))
-                .block(Block::default().borders(Borders::ALL))
-                .alignment(Alignment::Center);
-            f.render_widget(header, chunks[0]);
-
-            // Content
+            // Single full-screen content area
             let mut content_lines = vec![];
 
             if let Some(track) = current_track {
-                let display_name = truncate_for_display(&track.display_name(), size.width, 10);
-                content_lines.push(Line::from(vec![
-                    Span::raw("  ♪  "),
-                    Span::styled(display_name, Style::default().fg(Color::Yellow)),
-                ]));
-
-                // Artist and album (truncated to 40 chars each)
-                if let Some(artist) = &track.artist {
+                // Artist - Album (on one line)
+                let artist_album = if let (Some(artist), Some(album)) = (&track.artist, &track.album) {
                     let artist_truncated = truncate_text(artist, 40);
-                    if let Some(album) = &track.album {
-                        let album_truncated = truncate_text(album, 40);
-                        content_lines.push(Line::from(format!(
-                            "     Artist: {}  •  Album: {}",
-                            artist_truncated, album_truncated
-                        )));
-                    } else {
-                        content_lines.push(Line::from(format!("     Artist: {}", artist_truncated)));
-                    }
-                } else if let Some(album) = &track.album {
                     let album_truncated = truncate_text(album, 40);
-                    content_lines.push(Line::from(format!("     Album: {}", album_truncated)));
+                    format!("  {} - {}", artist_truncated, album_truncated)
+                } else if let Some(artist) = &track.artist {
+                    format!("  {}", truncate_text(artist, 40))
+                } else if let Some(album) = &track.album {
+                    format!("  {}", truncate_text(album, 40))
+                } else {
+                    "".to_string()
+                };
+                if !artist_album.is_empty() {
+                    content_lines.push(Line::from(artist_album));
                 }
 
+                // Track Title
+                let display_name = truncate_for_display(&track.display_name(), size.width, 4);
+                content_lines.push(Line::from(format!("  {}", display_name)));
+
+                // Empty line
                 content_lines.push(Line::from(""));
 
                 // Waveform and Time
                 let waveform_str = render_waveform(waveform_data);
                 let time_str = format!(
                     "{:02}:{:02} / {:02}:{:02}",
-                    pos.as_secs() / 60, pos.as_secs() % 60,
-                    dur.as_secs() / 60, dur.as_secs() % 60
+                    pos.as_secs() / 60,
+                    pos.as_secs() % 60,
+                    dur.as_secs() / 60,
+                    dur.as_secs() % 60
                 );
                 content_lines.push(Line::from(vec![
-                    Span::styled(format!("  {} ", waveform_str), Style::default().fg(Color::Cyan)),
+                    Span::styled(format!("  {}   ", waveform_str), Style::default().fg(Color::Cyan)),
                     Span::raw(time_str),
                 ]));
 
+                // Empty line
                 content_lines.push(Line::from(""));
 
-                // State
-                let state_icon = match state {
+                // Progress bar using braille characters
+                let progress_bar = render_progress_bar(pos, dur, size.width.saturating_sub(5) as usize);
+                content_lines.push(Line::from(format!("  {} ", progress_bar)));
+
+                // Empty line
+                content_lines.push(Line::from(""));
+
+                // Status line: [▶ Playing]  [⤮ Shuffle]  [↻ Repeat]  ? Help
+                let state_text = match state {
                     crate::player::PlaybackState::Playing => "▶ Playing",
                     crate::player::PlaybackState::Paused => "⏸ Paused",
                     crate::player::PlaybackState::Stopped => "⏹ Stopped",
                 };
+
+                let shuffle_text = match shuffle_state {
+                    crate::playlist::ShuffleState::Off => "Shuffle: Off",
+                    crate::playlist::ShuffleState::On => "⤮ Shuffle",
+                };
+
+                let repeat_text = match repeat_mode {
+                    crate::playlist::RepeatMode::Off => "Repeat: Off",
+                    crate::playlist::RepeatMode::All => "↻ All",
+                    crate::playlist::RepeatMode::Single => "↻ Single",
+                };
+
                 content_lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(state_icon, Style::default().fg(Color::Green)),
+                    Span::raw("  ["),
+                    Span::styled(state_text, Style::default().fg(Color::Green)),
+                    Span::raw("]  ["),
+                    Span::styled(shuffle_text, Style::default().fg(Color::Yellow)),
+                    Span::raw("]  ["),
+                    Span::styled(repeat_text, Style::default().fg(Color::Magenta)),
+                    Span::raw("]  "),
+                    Span::styled("? Help", Style::default().fg(Color::Cyan)),
                 ]));
-
-                content_lines.push(Line::from(""));
-
-                // Track info
-                content_lines.push(Line::from(format!(
-                    "  Track {}/{}  |  Shuffle: {:?}  |  Repeat: {:?}",
-                    current_index + 1,
-                    playlist_len,
-                    shuffle_state,
-                    repeat_mode
-                )));
             } else {
                 content_lines.push(Line::from("  No track loaded"));
             }
 
             let content = Paragraph::new(content_lines)
-                .block(Block::default().borders(Borders::NONE));
-            f.render_widget(content, chunks[1]);
-
-            // Progress bar
-            let progress = if dur.as_secs() > 0 {
-                (pos.as_secs_f64() / dur.as_secs_f64() * 100.0) as u16
-            } else {
-                0
-            };
-
-            let gauge = Gauge::default()
-                .block(Block::default())
-                .gauge_style(
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .bg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
-                )
-                .percent(progress);
-            f.render_widget(gauge, chunks[2]);
-
-            // Footer
-            let footer_text = format!(
-                "Space: Play/Pause | n: Next | p: Previous | q: Quit | →/←: Seek ±{}s | s: Shuffle | r: Repeat | t: Tracks | ?: Help",
-                seek_step
-            );
-            let footer = Paragraph::new(footer_text)
-                .style(Style::default().fg(Color::DarkGray))
-                .block(Block::default().borders(Borders::ALL))
-                .alignment(Alignment::Center);
-            f.render_widget(footer, chunks[3]);
+                .block(Block::default().borders(Borders::ALL));
+            f.render_widget(content, size);
 }
 
 /// Renders the track list overlay view.
@@ -669,6 +636,21 @@ fn render_size_warning(
         .split(size);
 
     f.render_widget(paragraph, vertical[1]);
+}
+
+/// Renders a progress bar using braille characters.
+fn render_progress_bar(pos: Duration, dur: Duration, width: usize) -> String {
+    if width == 0 || dur.as_secs() == 0 {
+        return String::new();
+    }
+
+    let progress = (pos.as_secs_f64() / dur.as_secs_f64()).min(1.0);
+    let filled_width = (progress * width as f64).round() as usize;
+
+    let filled = "⣿".repeat(filled_width);
+    let empty = "⣀".repeat(width.saturating_sub(filled_width));
+
+    format!("{}{}", filled, empty)
 }
 
 /// Renders bar visualizer data as a string of block characters.
