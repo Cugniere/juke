@@ -5,71 +5,77 @@ mod player;
 mod playlist;
 mod ui;
 
-use std::time::Duration;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use std::env;
+use std::path::Path;
 
-fn main() {
-    println!("=== juke - minimalist terminal music player ===\n");
-
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let config = config::Config::load();
-    println!("[Config] Loaded successfully");
-    println!("[Config] Seek step: {} seconds", config.playback.seek_step);
-    if let Some(path) = config::Config::config_path() {
-        println!("[Config] File: {}\n", path.display());
-    }
 
-    // Test player
-    println!("--- Testing Audio Player ---");
-    let mut player = match player::Player::new() {
-        Ok(p) => {
-            println!("[Player] Initialized successfully");
-            p
-        }
-        Err(e) => {
-            eprintln!("[Player] Error: {}", e);
-            return;
-        }
+    // Parse command-line arguments
+    let args: Vec<String> = env::args().collect();
+
+    let playlist = if args.len() > 1 {
+        let path = &args[1];
+        load_playlist(path)?
+    } else {
+        // Default to current directory
+        load_playlist(".")?
     };
 
-    // Try to load a test track
-    let test_track = "music/Drew_Redman__1000xResistOST__A_Teardrop.mp3";
-    println!("[Player] Loading track: {}", test_track);
-
-    match player.load_track(test_track) {
-        Ok(()) => {
-            println!("[Player] Track loaded successfully");
-            println!("[Player] Duration: {:?}", player.duration());
-            println!("[Player] State: {:?}", player.state());
-
-            // Test playback controls
-            println!("\n[Player] Testing playback controls...");
-            player.play();
-            println!("[Player] Playing... State: {:?}", player.state());
-
-            std::thread::sleep(Duration::from_secs(2));
-            println!("[Player] Position: {:?}", player.current_position());
-            println!("[Player] Amplitude: {:.2}", player.amplitude());
-
-            player.pause();
-            println!("[Player] Paused. State: {:?}", player.state());
-
-            // Test seeking
-            println!("\n[Player] Testing seek...");
-            let seek_step = Duration::from_secs(config.playback.seek_step as u64);
-            if let Err(e) = player.seek_forward(seek_step) {
-                eprintln!("[Player] Seek error: {}", e);
-            } else {
-                println!("[Player] Seeked forward {} seconds", config.playback.seek_step);
-                println!("[Player] New position: {:?}", player.current_position());
-            }
-
-            player.stop();
-            println!("[Player] Stopped. State: {:?}", player.state());
-        }
-        Err(e) => {
-            eprintln!("[Player] Error loading track: {}", e);
-        }
+    if playlist.is_empty() {
+        eprintln!("Error: No audio files found");
+        eprintln!("Usage: {} [directory or playlist.m3u]", args.get(0).unwrap_or(&"juke".to_string()));
+        std::process::exit(1);
     }
 
-    println!("\n=== All systems operational ===");
+    // Create and start the app
+    let mut app = app::App::new(playlist, config)?;
+    app.start()?;
+
+    // Enable raw mode for keyboard input
+    enable_raw_mode()?;
+
+    // Main loop
+    let result = run_main_loop(&mut app);
+
+    // Cleanup
+    disable_raw_mode()?;
+
+    // Clear screen one last time
+    print!("\x1B[2J\x1B[1;1H");
+    println!("Thanks for using juke!");
+
+    result
+}
+
+/// Main application loop.
+fn run_main_loop(app: &mut app::App) -> Result<(), Box<dyn std::error::Error>> {
+    while app.is_running() {
+        // Handle input
+        input::handle_input(app)?;
+
+        // Update app state (check for track end, update display)
+        app.update()?;
+
+        // Small sleep to avoid busy loop
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Ok(())
+}
+
+/// Loads a playlist from a path (directory or M3U file).
+fn load_playlist(path: &str) -> Result<playlist::Playlist, Box<dyn std::error::Error>> {
+    let path = Path::new(path);
+
+    if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("m3u") {
+        // Load M3U file
+        Ok(playlist::Playlist::from_m3u(path)?)
+    } else if path.is_dir() {
+        // Scan directory
+        Ok(playlist::Playlist::from_directory(path)?)
+    } else {
+        Err("Path must be a directory or .m3u file".into())
+    }
 }
