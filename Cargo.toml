@@ -1,0 +1,12 @@
+[package]
+name = "juke"
+version = "0.1.0"
+edition = "2025"
+description = "A minimalist terminal music player"
+license = "MIT"
+authors = ["Cugniere"]
+repository = "https://github.com/cugniere/juke"
+keywords = ["music", "player", "terminal", "tui"]
+categories = ["multimedia::audio", "command-line-utilities"]
+
+[dependencies]
