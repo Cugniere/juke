@@ -24,3 +24,4 @@ serde = { version = "1.0", features = ["derive"] }
 # Utilities
 dirs = "5.0"
 lofty = "0.21"
+rand = "0.8"

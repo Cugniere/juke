@@ -143,6 +143,19 @@ impl App {
 
         if let Some(track) = self.playlist.current_track() {
             println!("  ♪  {}", track.display_name());
+
+            // Display artist and album if available
+            if let Some(artist) = &track.artist {
+                print!("     Artist: {}", artist);
+                if let Some(album) = &track.album {
+                    println!("  •  Album: {}", album);
+                } else {
+                    println!();
+                }
+            } else if let Some(album) = &track.album {
+                println!("     Album: {}", album);
+            }
+
             println!();
 
             let pos = self.player.current_position();

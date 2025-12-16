@@ -1,5 +1,7 @@
 //! Playlist management, track metadata, M3U parsing, and directory scanning.
 
+use lofty::file::{AudioFile, TaggedFileExt};
+use lofty::tag::Accessor;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -288,7 +290,7 @@ fn scan_directory<P: AsRef<Path>>(path: P) -> Result<Vec<Track>, PlaylistError> 
                 if path.is_dir() {
                     scan_recursive(&path, tracks)?;
                 } else if is_audio_file(&path) {
-                    tracks.push(Track::new(path));
+                    tracks.push(extract_metadata(&path));
                 }
             }
         }
@@ -310,6 +312,35 @@ fn is_audio_file(path: &Path) -> bool {
         .and_then(|ext| ext.to_str())
         .map(|ext| matches!(ext.to_lowercase().as_str(), "mp3" | "flac" | "ogg"))
         .unwrap_or(false)
+}
+
+/// Extracts metadata from an audio file using lofty.
+fn extract_metadata(path: &Path) -> Track {
+    let mut track = Track::new(path.to_path_buf());
+
+    // Try to read metadata, but don't fail if we can't
+    if let Ok(tagged_file) = lofty::read_from_path(path) {
+        let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
+
+        if let Some(tag) = tag {
+            // Extract title
+            track.title = tag.title().map(|s| s.to_string());
+
+            // Extract artist
+            track.artist = tag.artist().map(|s| s.to_string());
+
+            // Extract album
+            track.album = tag.album().map(|s| s.to_string());
+        }
+
+        // Extract duration from properties
+        let duration = tagged_file.properties().duration();
+        if !duration.is_zero() {
+            track.duration = Some(duration);
+        }
+    }
+
+    track
 }
 
 /// Parses an M3U playlist file.
@@ -350,9 +381,10 @@ fn parse_m3u<P: AsRef<Path>>(path: P) -> Result<Vec<Track>, PlaylistError> {
                 playlist_dir.join(line)
             };
 
-            let mut track = Track::new(track_path);
+            // Extract metadata from the file
+            let mut track = extract_metadata(&track_path);
 
-            // Apply EXTINF metadata if present
+            // Apply or override with EXTINF metadata if present
             if let Some((duration, title)) = current_extinf.take() {
                 track.duration = Some(duration);
                 track.title = Some(title);
@@ -501,5 +533,47 @@ mod tests {
         assert!(is_audio_file(Path::new("song.ogg")));
         assert!(!is_audio_file(Path::new("song.txt")));
         assert!(!is_audio_file(Path::new("song.wav")));
+    }
+
+    #[test]
+    fn test_metadata_extraction() {
+        // Test with a non-existent file - should not panic
+        let track = extract_metadata(Path::new("nonexistent.mp3"));
+        assert!(track.title.is_none());
+        assert!(track.artist.is_none());
+        assert!(track.album.is_none());
+    }
+
+    #[test]
+    fn test_load_music_directory() {
+        // Test loading the actual music directory if it exists
+        let music_dir = Path::new("music");
+        if music_dir.exists() && music_dir.is_dir() {
+            let result = Playlist::from_directory(music_dir);
+            match result {
+                Ok(playlist) => {
+                    println!("\nLoaded {} tracks from music directory", playlist.len());
+                    for track in playlist.tracks() {
+                        println!("  - {}", track.display_name());
+                        if let Some(artist) = &track.artist {
+                            println!("    Artist: {}", artist);
+                        }
+                        if let Some(album) = &track.album {
+                            println!("    Album: {}", album);
+                        }
+                        if let Some(duration) = &track.duration {
+                            println!("    Duration: {}:{:02}",
+                                duration.as_secs() / 60,
+                                duration.as_secs() % 60);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Note: Could not load music directory: {}", e);
+                }
+            }
+        } else {
+            println!("Skipping music directory test - directory not found");
+        }
     }
 }
