@@ -224,8 +224,8 @@ impl App {
 
             // Center the selected track if possible
             if let Ok(size) = self.terminal.size() {
-                let visible_height = size.height.saturating_sub(5) as usize;
-                if self.track_list_selected > visible_height / 2 {
+                let visible_height = size.height.saturating_sub(7) as usize;
+                if visible_height > 0 && self.track_list_selected > visible_height / 2 {
                     self.track_list_scroll = self.track_list_selected.saturating_sub(visible_height / 2);
                 }
             }
@@ -313,11 +313,12 @@ impl App {
 
                 // Get terminal size to calculate visible area
                 if let Ok(size) = self.terminal.size() {
-                    // Track list layout: 3 lines header + content + 2 lines footer
-                    let visible_height = size.height.saturating_sub(5) as usize;
+                    // Track list layout: 3 lines header + content with borders (2 lines) + 2 lines footer
+                    // Visible content area = total - 3 (header) - 2 (footer) - 2 (borders) = total - 7
+                    let visible_height = size.height.saturating_sub(7) as usize;
 
                     // Adjust scroll if selection moved below visible area
-                    if self.track_list_selected >= self.track_list_scroll + visible_height {
+                    if visible_height > 0 && self.track_list_selected >= self.track_list_scroll + visible_height {
                         self.track_list_scroll = self.track_list_selected.saturating_sub(visible_height - 1);
                     }
                 }
@@ -576,7 +577,8 @@ fn render_track_list_view(
         let mut track_lines = vec![];
 
         // Calculate visible range based on scroll offset and content area height
-        let visible_height = chunks[1].height as usize;
+        // Account for borders (top and bottom) reducing the drawable area by 2 lines
+        let visible_height = chunks[1].height.saturating_sub(2) as usize;
         let visible_start = scroll_offset;
         let visible_end = (scroll_offset + visible_height).min(filtered_indices.len());
 
