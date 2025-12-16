@@ -1,7 +1,7 @@
 [package]
 name = "juke"
 version = "0.1.0"
-edition = "2025"
+edition = "2024"
 description = "A minimalist terminal music player"
 license = "MIT"
 authors = ["Cugniere"]
@@ -10,3 +10,17 @@ keywords = ["music", "player", "terminal", "tui"]
 categories = ["multimedia::audio", "command-line-utilities"]
 
 [dependencies]
+# Audio playback
+rodio = { version = "0.19", default-features = false, features = ["mp3", "flac", "vorbis"] }
+
+# Terminal UI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Configuration and serialization
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+
+# Utilities
+dirs = "5.0"
+lofty = "0.21"
