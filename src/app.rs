@@ -109,7 +109,7 @@ impl App {
             // Use modulo to keep time in a reasonable range for sine calculations
             let time = (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(Duration::ZERO)
                 .as_millis() % 60000) as f32 / 1000.0; // 0-60 seconds range
 
             // Update each bar with its own frequency to simulate different frequency bands
@@ -181,7 +181,13 @@ impl App {
 
     /// Quits the application.
     pub fn quit(&mut self) {
+        self.player.stop();
         self.running = false;
+    }
+
+    /// Stops playback before shutdown.
+    pub fn stop_playback(&mut self) {
+        self.player.stop();
     }
 
     /// Returns whether the app is running.
@@ -228,9 +234,29 @@ impl App {
     /// Loads the current track from the playlist.
     fn load_current_track(&mut self) -> Result<(), PlayerError> {
         if let Some(track) = self.playlist.current_track() {
-            self.player.load_track(&track.path)?;
-            self.player.play();
-            self.display_status();
+            match self.player.load_track(&track.path) {
+                Ok(_) => {
+                    self.player.play();
+                    self.display_status();
+                }
+                Err(PlayerError::DecodeError(msg)) => {
+                    // Log error to stderr (silent skip in UI)
+                    eprintln!(
+                        "Warning: Skipping unplayable track: {} ({})",
+                        track.display_name(),
+                        msg
+                    );
+                    // Skip to next track
+                    if self.playlist.next() {
+                        return self.load_current_track(); // Recursive retry
+                    } else {
+                        return Err(PlayerError::DecodeError(
+                            "No playable tracks remaining".to_string(),
+                        ));
+                    }
+                }
+                Err(e) => return Err(e), // Propagate other errors
+            }
         }
         Ok(())
     }
@@ -253,8 +279,17 @@ impl App {
         let tracks: Vec<_> = self.playlist.tracks().to_vec();
         let waveform_data = self.waveform_history.clone();
 
-        self.terminal.draw(move |f| {
+        if let Err(e) = self.terminal.draw(move |f| {
             let size = f.area();
+
+            // Check minimum terminal size
+            const MIN_WIDTH: u16 = 40;
+            const MIN_HEIGHT: u16 = 10;
+
+            if size.width < MIN_WIDTH || size.height < MIN_HEIGHT {
+                render_size_warning(f, size, MIN_WIDTH, MIN_HEIGHT);
+                return;
+            }
 
             match ui_mode {
                 UIMode::Normal => render_normal_view(
@@ -267,8 +302,26 @@ impl App {
                 ),
                 UIMode::Help => render_help_view(f, size, seek_step),
             }
-        }).unwrap();
+        }) {
+            eprintln!("Fatal: Failed to draw terminal: {}", e);
+            self.running = false;
+        }
     }
+}
+
+/// Truncates text to max width, adding ellipsis if needed.
+fn truncate_text(text: &str, max_width: usize) -> String {
+    if text.len() <= max_width {
+        text.to_string()
+    } else {
+        format!("{}...", &text[..max_width.saturating_sub(3)])
+    }
+}
+
+/// Truncates text based on available terminal width.
+fn truncate_for_display(text: &str, area_width: u16, reserved: u16) -> String {
+    let max_width = (area_width.saturating_sub(reserved)) as usize;
+    truncate_text(text, max_width.max(10)) // Minimum 10 chars
 }
 
 /// Renders the normal playback view.
@@ -309,20 +362,27 @@ fn render_normal_view(
             let mut content_lines = vec![];
 
             if let Some(track) = current_track {
+                let display_name = truncate_for_display(&track.display_name(), size.width, 10);
                 content_lines.push(Line::from(vec![
                     Span::raw("  ♪  "),
-                    Span::styled(track.display_name(), Style::default().fg(Color::Yellow)),
+                    Span::styled(display_name, Style::default().fg(Color::Yellow)),
                 ]));
 
-                // Artist and album
+                // Artist and album (truncated to 40 chars each)
                 if let Some(artist) = &track.artist {
+                    let artist_truncated = truncate_text(artist, 40);
                     if let Some(album) = &track.album {
-                        content_lines.push(Line::from(format!("     Artist: {}  •  Album: {}", artist, album)));
+                        let album_truncated = truncate_text(album, 40);
+                        content_lines.push(Line::from(format!(
+                            "     Artist: {}  •  Album: {}",
+                            artist_truncated, album_truncated
+                        )));
                     } else {
-                        content_lines.push(Line::from(format!("     Artist: {}", artist)));
+                        content_lines.push(Line::from(format!("     Artist: {}", artist_truncated)));
                     }
                 } else if let Some(album) = &track.album {
-                    content_lines.push(Line::from(format!("     Album: {}", album)));
+                    let album_truncated = truncate_text(album, 40);
+                    content_lines.push(Line::from(format!("     Album: {}", album_truncated)));
                 }
 
                 content_lines.push(Line::from(""));
@@ -453,13 +513,16 @@ fn render_track_list_view(
 
             let mut line_spans = vec![Span::raw(prefix), Span::raw(track_num)];
 
+            // Truncate track name based on available width (reserve 25 chars for prefix, number, duration)
+            let display_name = truncate_for_display(&track.display_name(), size.width, 25);
+
             if idx == current_index {
                 line_spans.push(Span::styled(
-                    track.display_name(),
+                    display_name,
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
                 ));
             } else {
-                line_spans.push(Span::raw(track.display_name()));
+                line_spans.push(Span::raw(display_name));
             }
 
             if let Some(duration) = &track.duration {
@@ -574,6 +637,38 @@ fn render_help_view(f: &mut ratatui::Frame, size: ratatui::layout::Rect, seek_st
             .block(Block::default().borders(Borders::ALL).title("Help"))
             .alignment(Alignment::Left);
         f.render_widget(help, help_area);
+}
+
+/// Renders a warning when terminal is too small.
+fn render_size_warning(
+    f: &mut ratatui::Frame,
+    size: ratatui::layout::Rect,
+    min_width: u16,
+    min_height: u16,
+) {
+    use ratatui::widgets::Wrap;
+
+    let message = format!(
+        "Terminal too small!\n\nMinimum: {}x{}\nCurrent: {}x{}\n\nPlease resize terminal to continue.",
+        min_width, min_height, size.width, size.height
+    );
+
+    let paragraph = Paragraph::new(message)
+        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))
+        .wrap(Wrap { trim: true })
+        .alignment(Alignment::Center);
+
+    // Create centered block
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(7),
+            Constraint::Percentage(40),
+        ])
+        .split(size);
+
+    f.render_widget(paragraph, vertical[1]);
 }
 
 /// Renders bar visualizer data as a string of block characters.

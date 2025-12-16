@@ -255,7 +255,7 @@ impl Player {
             // In a real implementation, this would sample the actual audio buffer
             let base_amplitude = 0.5 + (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .unwrap_or(Duration::ZERO)
                 .as_millis() as f32
                 * 0.01)
                 .sin()

@@ -12,6 +12,8 @@ use crossterm::{
 use std::env;
 use std::io;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
@@ -38,25 +40,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
 
+    // Setup signal handler for graceful shutdown
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+
+    // Setup panic hook to restore terminal state
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let _ = cleanup_terminal();
+        original_hook(panic_info);
+    }));
+
     // Create and start the app
     let mut app = app::App::new(playlist, config)?;
     app.start()?;
 
     // Main loop
-    let result = run_main_loop(&mut app);
+    let result = run_main_loop(&mut app, running);
+
+    // Stop audio playback
+    app.stop_playback();
 
     // Cleanup - restore terminal state
-    disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
-
-    println!("Thanks for using juke!");
+    cleanup_terminal()?;
 
     result
 }
 
+/// Cleans up terminal state before exit.
+fn cleanup_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen)?;
+    println!("Thanks for using juke!");
+    Ok(())
+}
+
 /// Main application loop.
-fn run_main_loop(app: &mut app::App) -> Result<(), Box<dyn std::error::Error>> {
-    while app.is_running() {
+fn run_main_loop(
+    app: &mut app::App,
+    running: Arc<AtomicBool>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    while app.is_running() && running.load(Ordering::SeqCst) {
         // Handle input
         input::handle_input(app)?;
 

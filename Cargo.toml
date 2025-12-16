@@ -25,3 +25,4 @@ serde = { version = "1.0", features = ["derive"] }
 dirs = "5.0"
 lofty = "0.21"
 rand = "0.8"
+ctrlc = { version = "3.4", features = ["termination"] }
