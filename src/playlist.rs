@@ -3,7 +3,7 @@
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::tag::Accessor;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -126,12 +126,8 @@ impl Playlist {
         })
     }
 
-    /// Saves the playlist to an M3U file.
-    pub fn save_m3u<P: AsRef<Path>>(&self, path: P) -> Result<(), PlaylistError> {
-        write_m3u(&self.tracks, path)
-    }
-
     /// Adds a track to the playlist.
+    #[allow(dead_code)]
     pub fn add_track(&mut self, track: Track) {
         self.tracks.push(track);
         if self.shuffle == ShuffleState::On {
@@ -395,32 +391,6 @@ fn parse_m3u<P: AsRef<Path>>(path: P) -> Result<Vec<Track>, PlaylistError> {
     }
 
     Ok(tracks)
-}
-
-/// Writes tracks to an M3U playlist file.
-fn write_m3u<P: AsRef<Path>>(tracks: &[Track], path: P) -> Result<(), PlaylistError> {
-    let mut file = File::create(path).map_err(|e| PlaylistError::IoError(e.to_string()))?;
-
-    writeln!(file, "#EXTM3U").map_err(|e| PlaylistError::IoError(e.to_string()))?;
-
-    for track in tracks {
-        let duration_secs = track.duration.map(|d| d.as_secs() as i64).unwrap_or(-1);
-        let title = track.title.as_deref().unwrap_or_else(|| {
-            track
-                .path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown")
-        });
-
-        writeln!(file, "#EXTINF:{},{}", duration_secs, title)
-            .map_err(|e| PlaylistError::IoError(e.to_string()))?;
-
-        writeln!(file, "{}", track.path.display())
-            .map_err(|e| PlaylistError::IoError(e.to_string()))?;
-    }
-
-    Ok(())
 }
 
 /// Errors that can occur during playlist operations.

@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Terminal,
 };
 use std::io;
@@ -282,12 +282,6 @@ impl App {
             self.update_filtered_indices();
             self.display_status();
         }
-    }
-
-    /// Clears the search query.
-    pub fn clear_search(&mut self) {
-        self.search_query.clear();
-        self.display_status();
     }
 
     /// Moves selection up in track list.

@@ -4,7 +4,6 @@ use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Current playback state.
@@ -26,7 +25,6 @@ pub struct Player {
     // Track elapsed time manually since rodio doesn't provide easy seeking
     playback_start: Option<std::time::Instant>,
     elapsed_before_pause: Duration,
-    amplitude: Arc<Mutex<f32>>,
 }
 
 impl Player {
@@ -44,7 +42,6 @@ impl Player {
             current_duration: Duration::ZERO,
             playback_start: None,
             elapsed_before_pause: Duration::ZERO,
-            amplitude: Arc::new(Mutex::new(0.0)),
         })
     }
 
@@ -233,6 +230,7 @@ impl Player {
     }
 
     /// Sets the playback volume (0.0 to 1.0).
+    #[allow(dead_code)]
     pub fn set_volume(&mut self, volume: f32) {
         if let Some(sink) = &self.sink {
             sink.set_volume(volume.clamp(0.0, 1.0));
@@ -240,36 +238,9 @@ impl Player {
     }
 
     /// Returns the current volume (0.0 to 1.0).
+    #[allow(dead_code)]
     pub fn volume(&self) -> f32 {
         self.sink.as_ref().map_or(1.0, |s| s.volume())
-    }
-
-    /// Returns the current amplitude for waveform display.
-    ///
-    /// This is a simplified implementation that returns a value based on
-    /// playback state and volume. For true amplitude tracking, we would need
-    /// to process the raw audio samples.
-    pub fn amplitude(&self) -> f32 {
-        if self.state == PlaybackState::Playing {
-            // Simulate amplitude based on volume
-            // In a real implementation, this would sample the actual audio buffer
-            let base_amplitude = 0.5 + (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO)
-                .as_millis() as f32
-                * 0.01)
-                .sin()
-                .abs()
-                * 0.5;
-            base_amplitude * self.volume()
-        } else {
-            0.0
-        }
-    }
-
-    /// Returns the path of the currently loaded track.
-    pub fn current_path(&self) -> Option<&str> {
-        self.current_path.as_deref()
     }
 }
 
@@ -324,12 +295,6 @@ mod tests {
         // Play without track does nothing
         player.play();
         assert_eq!(player.state(), PlaybackState::Stopped);
-    }
-
-    #[test]
-    fn test_amplitude_when_stopped() {
-        let player = Player::new().unwrap();
-        assert_eq!(player.amplitude(), 0.0);
     }
 
     #[test]

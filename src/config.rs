@@ -44,6 +44,7 @@ pub enum KeyBinding {
 
 impl KeyBinding {
     /// Returns all key strings for this binding.
+    #[allow(dead_code)]
     pub fn keys(&self) -> Vec<&str> {
         match self {
             KeyBinding::Single(key) => vec![key.as_str()],
@@ -52,6 +53,7 @@ impl KeyBinding {
     }
 
     /// Checks if the binding contains the given key.
+    #[allow(dead_code)]
     pub fn contains(&self, key: &str) -> bool {
         self.keys().contains(&key)
     }
