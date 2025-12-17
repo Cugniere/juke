@@ -55,17 +55,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         original_hook(panic_info);
     }));
 
-    // Create and start the app
-    let mut app = app::App::new(playlist, config)?;
-    app.start()?;
+    // Create and start the app (ensure cleanup on error)
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        let mut app = app::App::new(playlist, config)?;
+        app.start()?;
 
-    // Main loop
-    let result = run_main_loop(&mut app, running);
+        // Main loop
+        run_main_loop(&mut app, running)?;
 
-    // Stop audio playback
-    app.stop_playback();
+        // Stop audio playback
+        app.stop_playback();
 
-    // Cleanup - restore terminal state
+        Ok(())
+    })();
+
+    // Cleanup - restore terminal state (always runs)
     cleanup_terminal()?;
 
     result
