@@ -93,11 +93,25 @@ impl Player {
 
     /// Starts or resumes playback.
     pub fn play(&mut self) {
-        if let Some(sink) = &self.sink {
-            if sink.is_paused() {
-                sink.play();
+        let is_paused = self.sink.as_ref().map_or(false, |s| s.is_paused());
+
+        if is_paused {
+            // Recreate the sink to avoid ALSA underrun errors after long pauses
+            let current_pos = self.current_position();
+            if self.seek_to(current_pos).is_ok() {
+                // seek_to leaves us paused, so explicitly start playing
+                if let Some(sink) = &self.sink {
+                    sink.play();
+                }
                 self.state = PlaybackState::Playing;
                 self.playback_start = Some(std::time::Instant::now());
+            } else {
+                // Fallback to simple play if seek fails
+                if let Some(sink) = &self.sink {
+                    sink.play();
+                    self.state = PlaybackState::Playing;
+                    self.playback_start = Some(std::time::Instant::now());
+                }
             }
         }
     }
